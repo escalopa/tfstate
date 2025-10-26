@@ -5,21 +5,23 @@ terraform {
     }
   }
 
-#   backend "s3" {
-#     endpoints = {
-#       s3 = "https://storage.yandexcloud.net"
-#     }
-#     region = "ru-central1"
+  backend "s3" {
+    endpoints = {
+      s3 = "https://storage.yandexcloud.net"
+    }
+    region = "ru-central1"
     
-#     bucket = "escalopa-terraform-state"
-#     key    = "main/terraform.tfstate"
+    bucket = "escalopa-tfstate"
+    key    = "terraform.tfstate"
   
-#     skip_region_validation      = true
-#     skip_credentials_validation = true
-#     skip_requesting_account_id  = true
-#     skip_metadata_api_check     = true
-#     skip_s3_checksum            = true
-#   }
+    workspace_key_prefix = ""
+
+    skip_region_validation      = true
+    skip_credentials_validation = true
+    skip_requesting_account_id  = true
+    skip_metadata_api_check     = true
+    skip_s3_checksum            = true
+  }
 
   required_version = ">= 0.13"
 }
@@ -71,11 +73,18 @@ resource "yandex_iam_service_account" "terraform_sa" {
 ###########################
 
 # Grant admin role to each managed folder
-resource "yandex_resourcemanager_folder_iam_member" "terraform_admin" {
+resource "yandex_resourcemanager_folder_iam_member" "terraform_sa_admin" {
   for_each = var.managed_folders
   
   folder_id = each.value
   role      = "admin"
+  member    = "serviceAccount:${yandex_iam_service_account.terraform_sa.id}"
+}
+
+# Gradn ydb.editor to create and manage ydb instances
+resource "yandex_resourcemanager_folder_iam_member" "terraform_sa_ydb" {
+  folder_id = var.folder_id
+  role      = "ydb.editor"
   member    = "serviceAccount:${yandex_iam_service_account.terraform_sa.id}"
 }
 
@@ -96,12 +105,33 @@ resource "yandex_iam_service_account_static_access_key" "terraform_sa_s3_keys" {
   description        = "Static keys for S3 backend access"
 }
 
+resource "local_file" "iam_json" {
+  content = jsonencode({
+    id                  = yandex_iam_service_account_key.terraform_sa_key.id
+    service_account_id  = yandex_iam_service_account_key.terraform_sa_key.service_account_id
+    created_at          = yandex_iam_service_account_key.terraform_sa_key.created_at
+    key_algorithm       = yandex_iam_service_account_key.terraform_sa_key.key_algorithm
+    public_key          = yandex_iam_service_account_key.terraform_sa_key.public_key
+    private_key         = yandex_iam_service_account_key.terraform_sa_key.private_key
+  })
+  filename = "${path.module}/iam.json"
+}
+
+
+resource "local_file" "key_json" {
+  content = jsonencode({
+    access_key = yandex_iam_service_account_static_access_key.terraform_sa_s3_keys.access_key
+    secret_key = yandex_iam_service_account_static_access_key.terraform_sa_s3_keys.secret_key
+  })
+  filename = "${path.module}/key.json"
+}
+
 ###########################
 ### S3 Bucket for Terraform State
 ###########################
 
 resource "yandex_storage_bucket" "terraform_state" {
-  bucket    = "escalopa-terraform-state"
+  bucket    = "escalopa-tfstate"
   folder_id = var.folder_id
   
   # No size limit for state files
@@ -116,26 +146,11 @@ resource "yandex_storage_bucket" "terraform_state" {
   lifecycle {
     prevent_destroy = true
   }
-
-  # Access key for bucket
-#   access_key = yandex_iam_service_account_static_access_key.terraform_sa_s3_keys.access_key
-#   secret_key = yandex_iam_service_account_static_access_key.terraform_sa_s3_keys.secret_key
 }
 
 ###########################
 ### Outputs
 ###########################
-
-output "service_account_id" {
-  value       = yandex_iam_service_account.terraform_sa.id
-  description = "Service account ID"
-}
-
-output "service_account_key" {
-  value       = yandex_iam_service_account_key.terraform_sa_key.private_key
-  sensitive   = true
-  description = "Service account private key (base64 encoded)"
-}
 
 output "s3_access_key" {
   value       = yandex_iam_service_account_static_access_key.terraform_sa_s3_keys.access_key
